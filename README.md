@@ -2,11 +2,30 @@
 
 ## Ziel
 
-Ein Data-Science-/Data-Analyst-Portfolio-Projekt zur Vorhersage des stündlichen Stromverbrauchs in Europa, mit Fokus auf:
+Ein Data-Science-/Data-Analyst-Portfolio-Projekt zur Vorhersage des stündlichen Stromverbrauchs in Deutschland.
 
 **Energy Analytics + Time Series + Wetter + Kalenderfeatures + Power BI Storytelling**
 
-Primäres Ziel: **Electricity Load Forecasting**, z.B. für Deutschland oder 3–5 ausgewählte Länder.
+Primäres Ziel: **Electricity Load Forecasting für Deutschland (stündlich, 2020–2025)**.
+
+> Hinweis: Das Jahr 2019 entfällt durch den Yearly-Lag-Feature (shift 8760h), der für die Saisonal-Erkennung entscheidend ist.
+
+---
+
+## Projektstatus
+
+### Abgeschlossen
+
+- [x] EDA Stromverbrauch Deutschland (Notebook 01)
+- [x] EDA Wetterdaten (Notebook 02)
+- [x] Feature Engineering & EDA kombinierter Datensatz (Notebook 03)
+- [x] Baseline- und ML-Modell-Evaluation (Notebook 04)
+
+### Offen
+
+- [ ] Power BI Dashboard (Notebook 04 Export)
+- [ ] Mehrere Länder
+- [ ] Schulferienratio
 
 ---
 
@@ -14,543 +33,185 @@ Primäres Ziel: **Electricity Load Forecasting**, z.B. für Deutschland oder 3�
 
 ### 1. Stromverbrauch
 
-**Europe Electricity Load (Hourly, 2019–2025)**
-Quelle: Kaggle, basierend auf ENTSO-E Transparency Platform. Der Datensatz enthält stündlich aggregierte Stromlast je Land von 2019 bis 2025. ENTSO-E selbst stellt historische Daten stündlich, monatlich und jährlich bereit, aggregiert nach Land. ([Kaggle][1])
+**Europe Electricity Load (Hourly, 2019–2025)**  
+Quelle: Kaggle, basierend auf ENTSO-E Transparency Platform.  
+([Kaggle](https://www.kaggle.com/datasets/dsersun/europe-electricity-load-hourly-20192025))
 
-Verwendung:
-
-* `datetime`
-* `country`
-* `load_mw`
+Verwendete Spalten:
+- `DateUTC`
+- `CountryCode` (gefiltert auf `DE`)
+- `Value` → umbenannt in `EnergyDemand`
 
 Lizenzhinweis:
-
-* ENTSO-E attribution in README aufnehmen.
-* CC BY-SA 4.0 beachten, falls der Kaggle-Datensatz das so angibt.
+- ENTSO-E attribution
+- CC BY-SA 4.0
 
 ---
 
 ### 2. Historische Wetterdaten
 
-**Open-Meteo Historical Weather API**
-Open-Meteo bietet historische Wetterdaten zurück bis 1940 und ab 2017 mit neueren Wettermodellen in ca. 9 km Auflösung. Die API liefert stündliche Variablen wie Temperatur, Niederschlag, Wind und weitere Wettergrößen. ([Open Meteo][2])
+**Open-Meteo Historical Weather API**  
+([Open Meteo](https://open-meteo.com/en/docs/historical-weather-api))
 
-`https://archive-api.open-meteo.com/v1/archive?latitude=city_lat&longitude=city_lon&start_date=2019-01-01&end_date=2025-09-30&hourly={','.join(weather_variables)}&timezone=auto`
+API-Endpunkt:
+https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&start_date=2019-01-01&end_date=2025-09-30&hourly={variables}&timezone=auto
 
-Geplante Variablen:
 
-* `temperature_2m`
-* `apparent_temperature`
-* `precipitation`
-* `rain`
-* `snowfall`
-* `wind_speed_10m`
-* `shortwave_radiation`
-* optional: `cloud_cover`, `relative_humidity_2m`
 
-Format:
+Verwendete Variablen:
+- `apparent_temperature`
+- `rain`
+- `snowfall`
+- `wind_speed_10m`
+- `shortwave_radiation`
 
-* API liefert JSON
-* in Pandas DataFrame umwandeln
-* lokal als CSV/Parquet speichern
+Aggregation über Top-5-Städte Deutschland (ungewichtet gemittelt):
+
+| Stadt | Einwohner |
+|---|---|
+| Berlin | 3,69 Mio |
+| Hamburg | 1,86 Mio |
+| München | 1,51 Mio |
+| Köln | 1,02 Mio |
+| Frankfurt a.M. | 0,76 Mio |
 
 ---
 
 ### 3. Feiertage
 
-**python-holidays**
-Die Library unterstützt länder- und subdivisionsspezifische Feiertage, also z.B. deutsche Bundesländer. 
-([holidays.readthedocs.io][3])
+**python-holidays**  
+([holidays.readthedocs.io](https://holidays.readthedocs.io/))
 
 Features:
-
-* `is_public_holiday`
-* `holiday_ratio`
-* optional: `is_bridge_day`
-* covid:  covid_period = 1 if 2020-03 bis 2022-03 else 0
-	covid_phase =
-    0 = pre-covid   # 2019
-    1 = lockdown    # 2020.03 - 2020.12
-    2 = recovery    # 2021, 2022
-
-Deutschland:
-
-* nationale Feiertage = 1.0
-* regionale Feiertage = nach Bevölkerungsanteil der Bundesländer gewichten
+- `is_holiday` — nationaler/regionaler Feiertag (0/1)
+- `holiday_ratio` — Anteil der Bundesländer mit Feiertag (0–1)
 
 ---
 
-### 4. Schulferien
+## Feature Engineering
 
-Für Deutschland optional über eine Schulferien-API. Die Deutsche Schulferien API stellt Ferien aller 16 Bundesländer bereit; die aktuell sichtbare API nennt Jahre 2022–2028, daher reicht sie eventuell nicht vollständig für 2019–2021. ([ferien-api.maxleistner.de][4])
+### Zeitfeatures
+| Feature | Beschreibung |
+|---|---|
+| `hour` | Stunde des Tages (0–23) |
+| `weekday` | Wochentag (0=Mo, 6=So) |
+| `month` | Monat (1–12) |
+| `is_weekend` | 1 wenn Sa/So |
 
-Empfehlung für 2 Wochen:
+> Empfehlung für Weiterentwicklung: zyklische Kodierung (`sin_hour`, `cos_hour`, `sin_month`, `cos_month`) statt Integer, um Periodizität korrekt abzubilden.
 
-* **Basisversion ohne Schulferien**
-* Moderate Verbesserung: `school_holiday_ratio`, falls Daten für den Zeitraum sauber verfügbar sind
+### Kalenderfeatures
+| Feature | Beschreibung |
+|---|---|
+| `is_holiday` | Feiertag ja/nein |
+| `holiday_ratio` | gewichteter Feiertagsanteil Bundesländer |
+| `is_pandemic_time` | 2020-03-01 bis 2021-12-31 |
 
----
+### Wetterfeatures
+| Feature | Beschreibung |
+|---|---|
+| `apparent_temperature` | gefühlte Temperatur |
+| `rain`, `snowfall` | Niederschlag |
+| `wind_speed_10m` | Windgeschwindigkeit |
+| `shortwave_radiation` | Solarstrahlung |
+| `apparent_temperature_lag_24h` | Temperatur vor 24h |
+| `apparent_temperature_rolling_mean_24h` | 24h-Rollmittel Temperatur |
+| `shortwave_radiation_0m_lag_24h` | Solarstrahlung vor 24h |
+| `shortwave_radiation_0m_rolling_mean_24h` | 24h-Rollmittel Solarstrahlung |
+| `heating_degree` | `max(0, 15 - apparent_temperature)` |
+| `cooling_degree` | `max(0, apparent_temperature - 25)` |
 
-# Projekt-Scope für 2 Wochen
+### Lag-Features Stromverbrauch (entscheidend für Saisonalität)
+| Feature | Beschreibung |
+|---|---|
+| `EnergyDemand_lag_24h` | Verbrauch vor 24h (selbe Stunde gestern) |
+| `EnergyDemand_lag_168h` | Verbrauch vor 168h (selbe Stunde letzte Woche) |
+| `EnergyDemand_lag_8760h` | Verbrauch vor 8760h (selbe Stunde letztes Jahr) |
+| `EnergyDemand_rolling_mean_24h` | 24h-Rollmittel Verbrauch (shift(1)) |
+| `EnergyDemand_rolling_mean_168h` | 168h-Rollmittel Verbrauch (shift(1)) |
 
-## Basisversion: Muss fertig werden
-
-Fokus auf:
-
-* Deutschland
-* Stromlast 2019–2024
-* Wetteraggregation über Top-Städte 2024 (Wiki)
-	Berlin:      3.69 Mio
-	Hamburg:     1.86
-	München:     1.51
-	Köln:        1.02
-	Frankfurt M: 0.76
-	
-* Feiertage
-* Baseline + ML-Modell
-* Power BI Dashboard
-* sauberes README
-
-## Moderate Verbesserung: falls Zeit bleibt
-
-Zusätzlich:
-
-* mehrere Länder + Frankreich, Spanien, Österreich, Italien
-* gewichtete Wetteraggregation nach Stadtbevölkerung
-* holiday_ratio = Länder mit Feiertag / 16
-* Brückentage = Tag vor oder nach Feiertag
-* Schulferienratio = = Länder mit Ferien / 16
-* Modellvergleich mit Feature Importance 
-* Forecast für 24h / 7 Tage
-
-* Daten von 2025 als Validation/Test
-
----
-
-# Zentrale Modellidee
-
-## Zielvariable
-
-```text
-load_mw
-```
-
-oder besser:
-
-```text
-load_mw_next_24h
-```
-
-Praktisch für den Start:
-
-```text
-load_mw zum aktuellen Zeitpunkt vorhersagen
-```
-
-mit Lag-Features aus der Vergangenheit.
+> Der Yearly-Lag (`lag_8760h`) ist der wichtigste Feature für Saisonal-Erkennung. Er bedingt den Wegfall von 2019 durch NaN-Werte nach `dropna()`.
 
 ---
 
-# Geplante Features
+## Train/Test Split
 
-## Zeitfeatures
+| Split | Zeitraum | Verwendung |
+|---|---|---|
+| Training | 2020–2024 | Modelltraining |
+| Test | 2025 | Finale Evaluation |
 
-Basis:
-
-* `hour`
-* `day_of_week`
-* `month`
-* `year`
-* `is_weekend`
-* `is_workday`
-
-Besser:
-
-* `sin_hour`, `cos_hour`
-* `sin_dayofyear`, `cos_dayofyear`
+Zeitbasierter Split — kein zufälliges Mischen. Cross-Validation mit `TimeSeriesSplit` (kein Standard-k-Fold, da Datenleck durch Lag-Features).
 
 ---
 
-## Lag-Features
+## Modelle
 
-Basis:
+### Preprocessing
+Für distanzbasierte Modelle (Linear Regression, SVR): `StandardScaler` + `OneHotEncoder` über `ColumnTransformer`.  
+Für baumbasierte Modelle (Random Forest, XGBoost, LightGBM): kein Preprocessing nötig.
 
-* `load_lag_1h`
-* `load_lag_24h`
-* `load_lag_168h`
+### Evaluierte Modelle
 
-Moderate Verbesserung:
+| Modell | Preprocessing | Anmerkung |
+|---|---|---|
+| Linear Regression | StandardScaler + OHE | Schwache Baseline |
+| Random Forest | keines | Beste Performance mit Lag-Features |
+| SVR (rbf) | StandardScaler + OHE | Nicht geeignet für ~46k Zeilen; nur auf 10k-Subset getestet |
+| XGBoost | keines | Gute Performance |
+| LightGBM | keines | Vergleichbar mit XGBoost, schneller |
+| SARIMAX | — | Auf täglicher Frequenz getestet (zu langsam auf Stundenbasis) |
 
-* `load_rolling_24h_mean`
-* `load_rolling_168h_mean`
-* `load_rolling_24h_std`
+### Hyperparameter-Tuning
 
----
+`RandomizedSearchCV` mit `TimeSeriesSplit(n_splits=5)` — respektiert zeitliche Reihenfolge.  
+Scoring: `neg_mean_absolute_error` (MAE praxisrelevanter als R² für Lastvorhersage).
 
-## Wetterfeatures
+### Bewertungsmetriken
 
-Basis:
-
-* `temp_weighted`
-* `wind_weighted`
-* `precipitation_weighted`
-* `shortwave_radiation_weighted`
-
-Moderate Verbesserung:
-
-* `temp_min`
-* `temp_max`
-* `temp_std`
-* `heating_degree_days`
-* `cooling_degree_days`
-
-Beispiel:
-
-```text
-heating_degree = max(0, 18 - temperature)
-cooling_degree = max(0, temperature - 22)
-```
+- **MAE** — mittlerer absoluter Fehler (primäre Metrik)
+- **MSE** — mittlerer quadratischer Fehler
+- **R²** — Erklärte Varianz
 
 ---
 
-## Kalenderfeatures
+## Erkenntnisse
 
-Basis:
-
-* `is_public_holiday`
-
-Besser:
-
-* `holiday_ratio`
-* `is_bridge_day`
-
-Optional:
-
-* `school_holiday_ratio`
+- **Demand-Lag-Features** (v.a. `lag_168h`, `lag_8760h`) sind die wichtigsten Features für Saisonal-Erkennung — deutlich wirksamer als `month` oder `hour` als Integer
+- Baumbasierte Modelle übertreffen lineare Modelle deutlich
+- **SVR** skaliert schlecht auf große Datensätze ($O(n^2)$ bis $O(n^3)$)
+- Standard-k-Fold CV führt bei Lag-Features zu Datenleck → `TimeSeriesSplit` verwenden
+- Zyklische Kodierung (`sin`/`cos`) für `hour` und `month` empfohlen, da Integer keine Periodizität abbilden
+- Industrieller Verbrauch (~40%) nicht durch Wetterdaten abgedeckt — potenzielle Verbesserung durch Industrieproduktionsindex (Destatis) oder ENTSO-E Day-Ahead-Preise
 
 ---
 
-# Wetteraggregation
+## Potenzielle Erweiterungen
 
-## Idee
-
-Da Stromdaten auf Länderebene vorliegen, lokale Wetterdaten aber auf Stadt-/Koordinatenebene, werden Wetterdaten je Land aggregiert.
-
-Empfohlen:
-
-```text
-Top 5 Städte pro Land + Gewichtung nach Bevölkerung
-```
-
-Formel:
-
-```text
-weighted_temp = sum(temp_city * population_city) / sum(population_city)
-```
-
-Für Deutschland z.B.:
-
-* Berlin
-* Hamburg
-* München
-* Köln
-* Frankfurt am Main
-
-README-Formulierung:
-
-```text
-Weather data was collected for representative high-population cities and aggregated using population-weighted averages to approximate country-level weather exposure.
-```
+- Gewichtete Wetteraggregation nach Stadtbevölkerung
+- ENTSO-E Day-Ahead-Preise als Feature
+- Industrieproduktionsindex (Destatis, monatlich)
+- Schulferienratio
+- Brückentage
+- Mehrere Länder (Frankreich, Spanien, Österreich, Italien)
+- 24h-/7-Tage-Forecast
 
 ---
 
-# Python-/Notebook-Aufteilung
+## Notebook-Übersicht
 
-## Python-Skripte: wiederverwendbare Pipeline
-
-```text
-src/
-├── config.py
-├── load_energy.py
-├── fetch_weather.py
-├── aggregate_weather.py
-├── calendar_features.py
-├── feature_engineering.py
-├── train_model.py
-└── evaluate.py
-```
-
-### `config.py`
-
-Enthält:
-
-* Länder
-* Städte
-* Koordinaten
-* Bevölkerungsgewichte
-* Zeitraum
-* Wettervariablen
-* Pfade
+| Notebook | Inhalt |
+|---|---|
+| `01_eda_energy.ipynb` | EDA Stromverbrauch, Zeitreihenzerlegung, Saisonalität |
+| `02_eda_weather.ipynb` | EDA Wetterdaten je Stadt |
+| `03_eda_energy_weather.ipynb` | Feature Engineering, kombinierter Datensatz, Korrelationsanalyse |
+| `04_base_models_eval.ipynb` | Modelltraining, Tuning, Lernkurven, Prediction vs. Actual |
 
 ---
-
-### `load_energy.py`
-
-Aufgaben:
-
-* Kaggle/CSV-Daten laden
-* Spalten vereinheitlichen
-* Datetime parsen
-* Länder filtern
-* Zeitzone prüfen
-* Rohdaten speichern
-
-Output:
-
-```text
-data/processed/energy_clean.parquet
-```
-
----
-
-### `fetch_weather.py`
-
-Aufgaben:
-
-* Open-Meteo API pro Stadt aufrufen
-* JSON → DataFrame
-* Rohdaten pro Stadt speichern
-
-Output:
-
-```text
-data/raw/weather/{country}_{city}.parquet
-```
-
----
-
-### `aggregate_weather.py`
-
-Aufgaben:
-
-* Wetter pro Stadt laden
-* nach Bevölkerung gewichten
-* je Land und Stunde aggregieren
-
-Output:
-
-```text
-data/processed/weather_country_hourly.parquet
-```
-
----
-
-### `calendar_features.py`
-
-Aufgaben:
-
-* Feiertage generieren
-* Feiertagsratio berechnen
-* optional Brückentage
-* optional Schulferienratio
-
-Output:
-
-```text
-data/processed/calendar_features.parquet
-```
-
----
-
-### `feature_engineering.py`
-
-Aufgaben:
-
-* Energy + Weather + Calendar mergen
-* Zeitfeatures erzeugen
-* Lag-/Rolling-Features erzeugen
-* finale Modellmatrix speichern
-
-Output:
-
-```text
-data/processed/model_dataset.parquet
-```
-
----
-
-### `train_model.py`
-
-Aufgaben:
-
-* Train/Validation/Test Split zeitbasiert
-* Baseline-Modell
-* ML-Modell
-* Modell speichern
-
-Modelle:
-
-* Baseline: Seasonal Naive
-* ML: RandomForest oder HistGradientBoosting
-* Optional: XGBoost / LightGBM
-
----
-
-### `evaluate.py`
-
-Metriken:
-
-* MAE
-* RMSE
-* MAPE oder sMAPE
-
-Visuals:
-
-* Actual vs Predicted
-* Error by hour
-* Error by month
-* Feature Importance
-
----
-
-# Notebook-Aufteilung
-
-## `01_data_understanding.ipynb`
-
-Ziel:
-
-* Datensatz verstehen
-* Länder, Zeiträume, fehlende Werte prüfen
-* erste Zeitreihenplots
-
-Inhalt:
-
-* Load nach Jahr/Monat
-* Tagesprofile
-* Wochenprofile
-* Peak Load Analyse
-
----
-
-## `02_weather_calendar_features.ipynb`
-
-Ziel:
-
-* Wetter- und Kalenderfeatures validieren
-
-Inhalt:
-
-* Wetterdaten je Land prüfen
-* Temperatur vs Load
-* Feiertage vs Load
-* Wochenenden vs Werktage
-* Feature-Korrelationen
-
----
-
-## `03_modeling_forecasting.ipynb`
-
-Ziel:
-
-* Forecasting-Modell bauen und bewerten
-
-Inhalt:
-
-* Time-based Split
-* Baseline
-* ML-Modell
-* Modellvergleich
-* Feature Importance
-* Fehleranalyse
-
----
-
-## `04_business_insights_dashboard_prep.ipynb`
-
-Ziel:
-
-* Export für Power BI vorbereiten
-
-Output:
-
-```text
-dashboard/powerbi_energy_forecast_export.csv
-```
-
-Enthält:
-
-* Datum/Zeit
-* Land
-* tatsächliche Last
-* Vorhersage
-* Fehler
-* Wetterfeatures
-* Kalenderfeatures
-
----
-
-# Power BI Dashboard
-
-## Seite 1: Executive Overview
-
-KPIs:
-
-* Average Load
-* Peak Load
-* Forecast MAE
-* Forecast RMSE
-* MAPE/sMAPE
-
-Visuals:
-
-* Actual vs Predicted
-* Load by Country
-* Monthly Load Trend
-
----
-
-## Seite 2: Weather Impact
-
-Visuals:
-
-* Load vs Temperature
-* Load vs Shortwave Radiation
-* Load vs Wind
-* Heating/Cooling Degree Effekt
-
----
-
-## Seite 3: Calendar Impact
-
-Visuals:
-
-* Werktag vs Wochenende
-* Feiertag vs Nicht-Feiertag
-* Durchschnittliches Tagesprofil
-* optional Schulferienratio
-
----
-
-## Seite 4: Model Performance
-
-Visuals:
-
-* Error by Hour
-* Error by Month
-* Biggest Forecast Errors
-* Feature Importance
-
 
 ## Links
 
-[1]: https://www.kaggle.com/datasets/dsersun/europe-electricity-load-hourly-20192025 
-Europe Electricity Load (Hourly, 2019–2025)
-
-[2]: https://open-meteo.com/en/docs/historical-weather-api
-Historical Weather API
-
-[3]: https://holidays.readthedocs.io/ 
-holidays - Read the Docs
-
-[4]: https://ferien-api.maxleistner.de/ 
-Deutsche Schulferien API
+- [Europe Electricity Load (Hourly, 2019–2025) – Kaggle](https://www.kaggle.com/datasets/dsersun/europe-electricity-load-hourly-20192025)
+- [Open-Meteo Historical Weather API](https://open-meteo.com/en/docs/historical-weather-api)
+- [python-holidays](https://holidays.readthedocs.io/)
+- [Deutsche Schulferien API](https://ferien-api.maxleistner.de/)
