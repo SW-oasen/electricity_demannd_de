@@ -2,3 +2,4 @@
 data/*
 
 # Ignore all files in the notebook_edit folder
+notebook_edit/*
