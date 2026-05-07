@@ -26,6 +26,8 @@ Primäres Ziel: **Electricity Load Forecasting für Deutschland (stündlich, 202
 - [ ] Power BI Dashboard (Notebook 04 Export)
 - [ ] Mehrere Länder
 - [ ] Schulferienratio
+- [ ] Feature Importances Analyse
+- [ ] Web Interface für Stromverbrauch-Vorhersage, evtl. mit stream-lit
 
 ---
 
@@ -121,6 +123,8 @@ Features:
 | `heating_degree` | `max(0, 15 - apparent_temperature)` |
 | `cooling_degree` | `max(0, apparent_temperature - 25)` |
 
+* Gewichtete Wetteraggregation nach Stadtbevölkerung
+
 ### Lag-Features Stromverbrauch (entscheidend für Saisonalität)
 | Feature | Beschreibung |
 |---|---|
@@ -188,12 +192,11 @@ Scoring: `neg_mean_absolute_error` (MAE praxisrelevanter als R² für Lastvorher
 
 ## Potenzielle Erweiterungen
 
-- Gewichtete Wetteraggregation nach Stadtbevölkerung
 - ENTSO-E Day-Ahead-Preise als Feature
 - Industrieproduktionsindex (Destatis, monatlich)
 - Schulferienratio
 - Brückentage
-- Mehrere Länder (Frankreich, Spanien, Österreich, Italien)
+- Mehrere Länder wegen besonderes Klimas (FI - Finland, ES - Spanien)
 - 24h-/7-Tage-Forecast
 
 ---
