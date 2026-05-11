@@ -20,14 +20,16 @@ Primäres Ziel: **Electricity Load Forecasting für Deutschland (stündlich, 202
 - [x] EDA Wetterdaten (Notebook 02)
 - [x] Feature Engineering & EDA kombinierter Datensatz (Notebook 03)
 - [x] Baseline- und ML-Modell-Evaluation (Notebook 04)
+- [x] Feature Importances Analyse (Notebook 05)
 
 ### Offen
 
-- [ ] Power BI Dashboard (Notebook 04 Export)
+- [ ] Web scraping SMARD die Stromverbrauch-Daten seit 2025-10-01 für die aktuelle Vorhersage  (Notebook 06)
+- [ ] Web Interface für Stromverbrauch-Vorhersage, evtl. mit interactive notebook oder stream-lit  (Notebook 07)
+- [ ] Python Source Refactoring
+- [ ] Baysian Optimization und SARIMAX Modell auf AI PC
 - [ ] Mehrere Länder
-- [ ] Schulferienratio
-- [ ] Feature Importances Analyse
-- [ ] Web Interface für Stromverbrauch-Vorhersage, evtl. mit stream-lit
+- [ ] Residuallast=Netzlast−PV−Wind Onshore - konventionelle Erzeugung: positiv oder negativ?
 
 ---
 
@@ -218,3 +220,7 @@ Scoring: `neg_mean_absolute_error` (MAE praxisrelevanter als R² für Lastvorher
 - [Open-Meteo Historical Weather API](https://open-meteo.com/en/docs/historical-weather-api)
 - [python-holidays](https://holidays.readthedocs.io/)
 - [Deutsche Schulferien API](https://ferien-api.maxleistner.de/)
+
+## GitHub
+
+- https://github.com/SW-oasen/electricity_demand_forecast

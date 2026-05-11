@@ -6,16 +6,22 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "beautifulsoup4>=4.14.3",
+    "holidays>=0.96",
     "imbalanced-learn>=0.14.1",
     "ipykernel>=7.2.0",
     "ipython>=9.13.0",
+    "ipywidgets>=8.1.8",
+    "kagglehub>=1.0.1",
+    "lightgbm>=4.6.0",
     "matplotlib>=3.10.9",
     "numpy>=2.4.4",
     "pandas>=3.0.2",
+    "pypdf>=6.11.0",
     "requests>=2.33.1",
     "scikit-learn>=1.8.0",
     "scipy>=1.17.1",
     "seaborn>=0.13.2",
     "shap>=0.51.0",
     "statsmodels>=0.14.6",
+    "xgboost>=3.2.0",
 ]
