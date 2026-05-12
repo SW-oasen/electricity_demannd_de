@@ -8,8 +8,6 @@ Ein Data-Science-/Data-Analyst-Portfolio-Projekt zur Vorhersage des stündlichen
 
 Primäres Ziel: **Electricity Load Forecasting für Deutschland (stündlich, 2020–2025)**.
 
-> Hinweis: Das Jahr 2019 entfällt durch den Yearly-Lag-Feature (shift 8760h), der für die Saisonal-Erkennung entscheidend ist.
-
 ---
 
 ## Projektstatus
@@ -21,13 +19,14 @@ Primäres Ziel: **Electricity Load Forecasting für Deutschland (stündlich, 202
 - [x] Feature Engineering & EDA kombinierter Datensatz (Notebook 03)
 - [x] Baseline- und ML-Modell-Evaluation (Notebook 04)
 - [x] Feature Importances Analyse (Notebook 05)
+- [x] Web scraping SMARD die Stromverbrauch-Daten seit 2025-10-01 für die aktuelle Vorhersage (Notebook 06)
+- [x] Python Source Refactoring, /src (`fetch_prepare_data.py`, `train_model_predict.py`)
+- [x] Interaktive Vorhersage mit Datenpipeline (Notebook 07/08)
 
 ### Offen
 
-- [ ] Web scraping SMARD die Stromverbrauch-Daten seit 2025-10-01 für die aktuelle Vorhersage  (Notebook 06)
-- [ ] Web Interface für Stromverbrauch-Vorhersage, evtl. mit interactive notebook oder stream-lit  (Notebook 07)
-- [ ] Python Source Refactoring
-- [ ] Baysian Optimization und SARIMAX Modell auf AI PC
+- [ ] Web Interface (Streamlit) für Stromverbrauch-Vorhersage
+- [ ] Bayesian Optimization (Optuna) und SARIMAX Modell auf AI PC
 - [ ] Mehrere Länder
 - [ ] Residuallast=Netzlast−PV−Wind Onshore - konventionelle Erzeugung: positiv oder negativ?
 
@@ -52,7 +51,17 @@ Lizenzhinweis:
 
 ---
 
-### 2. Historische Wetterdaten
+### 2. Aktuelle Stromverbrauchsdaten (ab 2025-10-01)
+
+**SMARD Chart Data API** (Bundesnetzagentur)  
+([SMARD](https://www.smard.de/home))
+
+Filter-ID 410: Realisierter Stromverbrauch – Netzlast  
+Programmatisch abgerufen über `fetch_smard_netzlast()` in `src/fetch_prepare_data.py`.
+
+---
+
+### 3. Historische Wetterdaten
 
 **Open-Meteo Historical Weather API**  
 ([Open Meteo](https://open-meteo.com/en/docs/historical-weather-api))
@@ -81,7 +90,7 @@ Aggregation über Top-5-Städte Deutschland (ungewichtet gemittelt):
 
 ---
 
-### 3. Feiertage
+### 4. Feiertage
 
 **python-holidays**  
 ([holidays.readthedocs.io](https://holidays.readthedocs.io/))
@@ -132,11 +141,10 @@ Features:
 |---|---|
 | `EnergyDemand_lag_24h` | Verbrauch vor 24h (selbe Stunde gestern) |
 | `EnergyDemand_lag_168h` | Verbrauch vor 168h (selbe Stunde letzte Woche) |
-| `EnergyDemand_lag_8760h` | Verbrauch vor 8760h (selbe Stunde letztes Jahr) |
 | `EnergyDemand_rolling_mean_24h` | 24h-Rollmittel Verbrauch (shift(1)) |
 | `EnergyDemand_rolling_mean_168h` | 168h-Rollmittel Verbrauch (shift(1)) |
 
-> Der Yearly-Lag (`lag_8760h`) ist der wichtigste Feature für Saisonal-Erkennung. Er bedingt den Wegfall von 2019 durch NaN-Werte nach `dropna()`.
+> `EnergyDemand_lag_8760h` und `EnergyDemand_rolling_mean_8760h` wurden nach Feature-Importance-Analyse entfernt (geringer Beitrag, erzwang Wegfall von 2019).
 
 ---
 
@@ -144,7 +152,7 @@ Features:
 
 | Split | Zeitraum | Verwendung |
 |---|---|---|
-| Training | 2020–2024 | Modelltraining |
+| Training | 2019–2024 | Modelltraining |
 | Test | 2025 | Finale Evaluation |
 
 Zeitbasierter Split — kein zufälliges Mischen. Cross-Validation mit `TimeSeriesSplit` (kein Standard-k-Fold, da Datenleck durch Lag-Features).
@@ -211,12 +219,25 @@ Scoring: `neg_mean_absolute_error` (MAE praxisrelevanter als R² für Lastvorher
 | `02_eda_weather.ipynb` | EDA Wetterdaten je Stadt |
 | `03_eda_energy_weather.ipynb` | Feature Engineering, kombinierter Datensatz, Korrelationsanalyse |
 | `04_base_models_eval.ipynb` | Modelltraining, Tuning, Lernkurven, Prediction vs. Actual |
+| `05_feature_importances.ipynb` | Feature Importance Analyse, Entfernung schwacher Features |
+| `06_scrape_smard.ipynb` | SMARD API Scraping für Stromverbrauch ab 2025-10-01 |
+| `07/08_interactive_prediction.ipynb` | Interaktive Vorhersage, Datenpipeline für Prediction |
+
+---
+
+## Source Code (`/src`)
+
+| Datei | Inhalt |
+|---|---|
+| `fetch_prepare_data.py` | Kaggle/SMARD/Open-Meteo Datenabruf, Feature Engineering, Datenpipeline |
+| `train_model_predict.py` | Modelltraining, Hyperparameter-Tuning, Modell-Persistenz |
 
 ---
 
 ## Links
 
 - [Europe Electricity Load (Hourly, 2019–2025) – Kaggle](https://www.kaggle.com/datasets/dsersun/europe-electricity-load-hourly-20192025)
+- [SMARD Marktdaten - Bundesnetzagentur](https://www.smard.de/page/home/marktdaten/)
 - [Open-Meteo Historical Weather API](https://open-meteo.com/en/docs/historical-weather-api)
 - [python-holidays](https://holidays.readthedocs.io/)
 - [Deutsche Schulferien API](https://ferien-api.maxleistner.de/)
