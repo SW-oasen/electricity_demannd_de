@@ -3,3 +3,9 @@ data/*
 
 # Ignore all files in the notebook_edit folder
 notebook_edit/*
+
+# ignore all files in the model folder
+models/*
+
+# ignore .opd files in presentation folder
+presentation/*.opd
