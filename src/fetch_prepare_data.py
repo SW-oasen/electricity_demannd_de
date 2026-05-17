@@ -1,6 +1,5 @@
-
 # --------- fetch the data from Kaggle and save it to the raw data folder ----------
-
+from functools import lru_cache
 import shutil
 import os
 from typing import Literal
@@ -21,43 +20,40 @@ def fetch_kaggle_dataset(in_dataset_link=dataset_link, in_destination=destinatio
         print(f"Copied: {file} → {in_destination}")
 
 
-# --------- read the combined energy and weather data ----------
+# ========== prepare the energy data from Kaggle file for modeling ============
 
+from IPython.display import display
 import pandas as pd
 
 orig_file_path = "../data/raw/MHLV_2019_2025_combined.csv"
 processed_file_path = "../data/processed/energy_weather_2019_2025.csv"
 
 
-def read_energy_weather_data(file_path):
-    df = pd.read_csv(file_path)
-    return df
+def prepare_energy_data_for_modeling(file_path=orig_file_path):
+    '''
+    Prepare energy data for modeling: 
+        read the energy data from the Kaggle dataset
+        create time-based features
+        return the prepared DataFrame along with the start and end date of the energy data.
+    '''
+    out_df = pd.read_csv(file_path)
 
-def read_energy_data_from_kaggle_file(file_path=orig_file_path):
-    df_energy = pd.read_csv(file_path, parse_dates=['DateUTC'])
-    start_date = df_energy['DateUTC'].min().strftime("%Y-%m-%d")
-    end_date = df_energy['DateUTC'].max().strftime("%Y-%m-%d")
+    out_df = rename_time_column(out_df)
+    out_df['time'] = pd.to_datetime(out_df['time'], utc=True) 
+    out_df = out_df.rename(columns={'Value': 'EnergyDemand'})
 
-    df_energy_de = df_energy[df_energy['CountryCode'] == 'DE']  # filter for Germany, since we want to predict German energy demand
-    df_energy_de = df_energy_de.drop(columns=[col for col in df_energy_de.columns   if col not in ['DateUTC', 'Value']], errors='ignore')  # keep only the relevant columns, ignore if they are not present
-    
-    df_energy_de = rename_time_column(df_energy_de)
-    df_energy_de = create_time_based_features(df_energy_de, in_year=df_energy_de['time'].dt.year.max())
-    df_energy_de = create_energy_features(df_energy_de)
-    return df_energy_de, start_date, end_date
+    out_start_date = out_df['time'].min().strftime("%Y-%m-%d")
+    out_end_date = out_df['time'].max().strftime("%Y-%m-%d")
 
+    out_df = out_df[out_df['CountryCode'] == 'DE']  # filter for Germany, since we want to predict German energy demand
+    out_df = out_df.drop(columns=[col for col in out_df.columns if col not in ['time', 'EnergyDemand']], errors='ignore')  # keep only the relevant columns, ignore if they are not present
 
-def retrieve_train_test_data_from_csv(file_path=processed_file_path):
-    df = pd.read_csv(file_path)
-    train_data = df[df['time'] < '2025-01-01']
-    test_data = df[df['time'] >= '2025-01-01']
+    out_df = out_df.sort_values('time').reset_index(drop=True)
 
-    out_features_train = train_data.drop(['time', 'EnergyDemand'], axis=1)
-    out_target_train = train_data['EnergyDemand']
-    out_features_test = test_data.drop(['time', 'EnergyDemand'], axis=1)
-    out_target_test = test_data['EnergyDemand']
-    
-    return out_features_train, out_target_train, out_features_test, out_target_test
+    out_df = create_time_based_features(out_df, in_year=out_df['time'].dt.year.max())
+    out_df = create_energy_features(out_df)
+
+    return out_df, out_start_date, out_end_date
 
 
 # --------- scrape SMARD data ----------
@@ -154,15 +150,18 @@ def fetch_smard_netzlast(
     df = pd.DataFrame(rows, columns=["ts_ms", "load_MWh"])
     df = df.dropna(subset=["load_MWh"])
     df = df[(df["ts_ms"] >= start_ms) & (df["ts_ms"] <= end_ms)]
-    df["timestamp"] = pd.to_datetime(df["ts_ms"], unit="ms", utc=True).dt.tz_convert("Europe/Berlin")
+    df["timestamp"] = pd.to_datetime(df["ts_ms"], unit="ms", utc=True) #.dt.tz_convert("Europe/Berlin")
     df = df[["timestamp", "load_MWh"]].sort_values("timestamp").reset_index(drop=True)
-
-    #print(f"Retrieved {len(df)} rows from {df['timestamp'].iloc[0]} to {df['timestamp'].iloc[-1]}")
 
     if output_file:
         os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
         df.to_csv(output_file, index=False)
         #print(f"Saved to {output_file}")
+    
+    # timestamp -> time
+    df = rename_time_column(df)     
+    # rename load_MWh -> EnergyDemand to match training data column name
+    df = df.rename(columns={'load_MWh': 'EnergyDemand'})
 
     return df
 
@@ -180,24 +179,81 @@ def rename_time_column(in_df):
 # add holiday ratio depending the number of states in Germany with a holiday on that day
 import holidays 
 
+DE_STATE_CODES = ['BB', 'BE', 'BW', 'BY', 'HB', 'HE', 'HH', 'MV', 
+                  'NI', 'NW', 'RP', 'SH', 'SL', 'SN', 'ST', 'TH']
+
+# use lru_cache to cache the holiday data for each state and year, since the holiday data is static 
+# and can be reused across multiple calls to the holiday_ratio function, this can improve performance 
+# by avoiding redundant API calls or computations for the same state and year
+@lru_cache(maxsize=None)
+def _state_holidays(state_code, year):
+    return holidays.Germany(subdiv=state_code, years=[year])
+
+# calculate the holiday ratio for a given date, which is the number of states in Germany that have a holiday 
+# on that date divided by the total number of states (16), this feature can help capture the impact of holidays 
+# on energy demand, since holidays can lead to changes in energy consumption patterns due to factors 
+# such as reduced industrial activity, increased residential usage, and changes in transportation demand
 def holiday_ratio(date):
-    count = sum([1 for state in holidays.Germany(years=[date.year]).items() if state[0] == date])
+    '''
+    Calculate the holiday ratio for a given date, which is the number of states in Germany that have a holiday 
+    on that date divided by the total number of states (16).'''
+    count = sum(1 for code in DE_STATE_CODES 
+                if date in _state_holidays(code, date.year))
     return count / 16
 
-def create_time_based_features(in_df, in_year, time_column='time'):
+pandemic_start = pd.to_datetime('2020-03-01', utc=True)
+pandemic_end = pd.to_datetime('2021-12-31', utc=True)
+
+def create_time_based_features(in_df, in_year, time_column='time', in_pandemic_start=pandemic_start, in_pandemic_end=pandemic_end):
     '''
     Create time-based features such as hour of day, day of week, and month of year.
     '''
     out_df = in_df.copy()
-    out_df['year'] = out_df[time_column].dt.year
-    out_df['hour'] = out_df[time_column].dt.hour
-    out_df['weekday'] = out_df[time_column].dt.dayofweek
-    out_df['month'] = out_df[time_column].dt.month
-    out_df['is_weekend'] = out_df[time_column].dt.dayofweek.apply(lambda x: 1 if x >= 5 else 0)
+    out_df['year'] = out_df[time_column].dt.year.astype(int)
+    out_df['hour'] = out_df[time_column].dt.hour.astype(int)
+    out_df['weekday'] = out_df[time_column].dt.dayofweek.astype(int)
+    out_df['month'] = out_df[time_column].dt.month.astype(int)
+    out_df['is_weekend'] = out_df[time_column].dt.dayofweek.apply(lambda x: 1 if x >= 5 else 0).astype(int)
 
     de_holidays = holidays.Germany(years=range(2019, in_year + 1))
-    out_df['is_holiday'] = out_df[time_column].dt.date.apply(lambda x: 1 if x in de_holidays else 0)
-    out_df['holiday_ratio'] = out_df[time_column].dt.date.apply(holiday_ratio)
+    out_df['is_holiday'] = out_df[time_column].dt.date.apply(lambda x: 1 if x in de_holidays else 0).astype(int)
+    out_df['holiday_ratio'] = out_df[time_column].dt.date.apply(holiday_ratio).astype(float)
+
+    # is_workday: 1 only if it is neither a weekend nor a public holiday — direct signal for high-demand days
+    out_df['is_workday'] = ((out_df['is_weekend'] == 0) & (out_df['is_holiday'] == 0)).astype(int)
+
+    # is_bridge_day: a working day sandwiched between a public holiday and a weekend (or another holiday).
+    # These days typically see reduced industrial activity similar to a holiday.
+    dates = out_df[time_column].dt.date
+    out_df['is_bridge_day'] = dates.apply(
+        lambda d: 1 if (
+            d.weekday() not in (5, 6)           # the day itself is a weekday
+            and d not in de_holidays             # but not already a holiday
+            and (
+                # previous day is holiday or weekend
+                (
+                    (pd.Timestamp(d) - pd.Timedelta(days=1)).date() in de_holidays
+                    or (pd.Timestamp(d) - pd.Timedelta(days=1)).date().weekday() >= 5
+                )
+                # AND next day is holiday or weekend
+                and (
+                    (pd.Timestamp(d) + pd.Timedelta(days=1)).date() in de_holidays
+                    or (pd.Timestamp(d) + pd.Timedelta(days=1)).date().weekday() >= 5
+                )
+            )
+        ) else 0
+    ).astype(int)
+
+    # holiday_weight: combines holiday_ratio with the is_weekend flag so the model sees
+    # a single continuous "non-working-day intensity" signal in [0, 1].
+    # On a holiday with ratio=1.0 it equals 1.0; on a pure weekend it equals 0.5;
+    # on a bridge day it picks up a small boost from holiday_ratio of adjacent days.
+    out_df['holiday_weight'] = out_df[['holiday_ratio', 'is_weekend']].apply(
+        lambda row: max(row['holiday_ratio'], row['is_weekend'] * 0.5), axis=1
+    ).astype(float)
+
+    # add pandemic feature
+    out_df['is_pandemic_time'] = out_df[time_column].apply(lambda x: 1 if (x >= in_pandemic_start) and (x <= in_pandemic_end) else 0).astype(int)
 
     return out_df
 
@@ -213,52 +269,44 @@ def create_energy_features(in_df):
     # add lagged features for energy demand (shifted by 24 hours, 168 hours (1 week) to capture daily, weekly, and yearly patterns)
     out_df['EnergyDemand_lag_24h'] = out_df['EnergyDemand'].shift(24)   # 1 day
     out_df['EnergyDemand_lag_168h'] = out_df['EnergyDemand'].shift(168)   # 1 week
-    # out_df['EnergyDemand_lag_8760h'] = out_df['EnergyDemand'].shift(8760) # 1 year, removed after feature importance analysis showed it was not useful
+    # lag_8760h (1 year) is not useful, it leads to worse scoring and makes future prediction more difficult
+    #out_df['EnergyDemand_lag_8760h'] = out_df['EnergyDemand'].shift(8760) # 1 year
 
     # rolling mean of past demand (shift first to avoid leakage)
     out_df['EnergyDemand_rolling_mean_24h'] = out_df['EnergyDemand'].shift(1).rolling(24).mean()   # daily pattern
     out_df['EnergyDemand_rolling_mean_168h'] = out_df['EnergyDemand'].shift(1).rolling(168).mean() # weekly pattern
-    # out_df['EnergyDemand_rolling_mean_8760h'] = out_df['EnergyDemand'].shift(1).rolling(8760).mean() # yearly pattern, removed after feature importance analysis showed it was not useful
+    # rolling_mean_8760h (1 year) is not useful, it leads to worse scoring and makes future prediction more difficult
+    #out_df['EnergyDemand_rolling_mean_8760h'] = out_df['EnergyDemand'].shift(1).rolling(8760).mean() # yearly pattern
 
-    # drop rows with missing values
+    # drop nan rows after lagging and rolling calculations
     out_df = out_df.dropna()
 
     return out_df
 
-# =========== prepare energy data =============
+# =========== prepare energy data for prediction ==============
 
-def prepare_energy_data(
-        purpose: Literal['modeling', 'prediction'] = 'modeling', 
-        in_start_date=None, 
-        in_end_date=None):
+def prepare_energy_data_for_prediction(prediction_date, history_days=15):
     '''
-    Prepare energy data for modeling: fetch the energy data from SMARD, create time-based features, and return the prepared DataFrame.
+    Prepare energy data for prediction: 
+        fetch the energy data from SMARD
+        create time-based features, 
+        and return the prepared DataFrame.
     '''
-    if purpose == 'modeling':
-        df_energy, start_date, end_date = read_energy_data_from_kaggle_file()
-        df_energy = rename_time_column(df_energy)
-        df_energy = create_time_based_features(df_energy, in_year=pd.to_datetime(start_date).year)
-        df_energy = create_energy_features(df_energy)
+    # for prediction, we need to fetch the most recent energy data to create lagged features, since the Kaggle dataset only goes up to 2025-09-30
+    start_date, end_date = get_start_end_date(prediction_date, history_days)
+    out_df = fetch_smard_netzlast(start_date, end_date)
+    out_df = create_energy_features(out_df)
+    
+    # bug 2 corrected
+    # create time hourly of end_date+1 features for the future prediction date, since the lagged features will be based on the past 24h and 168h of energy demand, we need to have at least 168h of energy data up to the day before the prediction date
+    time_24h_after_end_date = pd.date_range(end_date, periods=24, freq='H') + pd.Timedelta(hours=24)
+    out_df['time'] = time_24h_after_end_date
+    out_df = create_time_based_features(out_df, in_year=pd.to_datetime(end_date).year)
 
-    elif purpose == 'prediction':
-        # for prediction, we need to fetch the most recent energy data to create lagged features, since the Kaggle dataset only goes up to 2025-09-30
-        df_energy = fetch_smard_netzlast(in_start_date, in_end_date)
-        df_energy = rename_time_column(df_energy)
-        df_energy = create_energy_features(df_energy)
-        
-        # create time hourly of in_end_day+1 features for the future prediction date, since the lagged features will be based on the past 24h and 168h of energy demand, we need to have at least 168h of energy data up to the day before the prediction date
-        time_24h_after_end_date = pd.to_datetime(in_end_date) + pd.Timedelta(hours=24)
-        df_energy['time'] = time_24h_after_end_date
-        df_energy = create_time_based_features(df_energy, in_year=pd.to_datetime(start_date).year)
-        start_date, end_date = in_start_date, in_end_date  # for consistency with the modeling case, we return the start and end date of the energy data we have, which can be used to fetch the corresponding weather data for the same period
-
-    else:
-        raise ValueError("Invalid purpose. Must be 'modeling' or 'prediction'.")
-
-    return df_energy, start_date, end_date
+    return out_df
 
 
-# ----------- fetch weather data from open-meteo  ----------
+# ----------- fetch weather data from open-meteo ----------
 
 import time
 import requests
@@ -267,7 +315,7 @@ import pandas as pd
 # apparent_temperature is the perceived temperature, which takes into account factors such as humidity and wind speed to provide a more accurate representation of how the temperature feels to humans. It is calculated using a formula that combines the actual air temperature with the effects of humidity and wind chill. The apparent temperature can be higher than the actual temperature in hot and humid conditions, and lower than the actual temperature in cold and windy conditions.
 # precipitation is the amount of water that falls from the atmosphere to the ground in the form of rain, snow, sleet, or hail. It is typically measured in millimeters (mm) or inches (in) and can be used to assess the amount of moisture in the air and the likelihood of certain weather conditions, such as flooding or drought.
 # shortwave_radiation is the amount of solar radiation that reaches the Earth's surface in the form of shortwave electromagnetic waves. It is typically measured in watts per square meter (W/m²) and can be used to assess the amount of energy available for photosynthesis, as well as the potential for solar power generation.
-weather_variables = ['temperature_2m', 'apparent_temperature', 'rain', 'snowfall', 'wind_speed_10m', 'shortwave_radiation']
+weather_variables = ['apparent_temperature', 'rain', 'snowfall', 'wind_speed_10m', 'shortwave_radiation']  # temperature_2m dropped: high correlation with apparent_temperature (see notebook 02 EDA)
 
 # get latitude and longitude of German cities: Berlin, Hamburg, München, Köln, Frankfurt
 selected_cities = {  
@@ -286,7 +334,8 @@ def fetch_weather_data_for_cities(in_selected_cities=selected_cities,
                                   in_end_date=end_date, 
                                   in_weather_variables=weather_variables):
     '''
-    Fetch weather data from open-meteo archive API for the selected cities and return a dictionary of city name to weather DataFrame.
+    Fetch weather data from open-meteo archive API for the selected cities 
+    and return a dictionary of city name to weather DataFrame.
     '''
     weather_city_dict = {}
     for city, coords in in_selected_cities.items():
@@ -294,7 +343,8 @@ def fetch_weather_data_for_cities(in_selected_cities=selected_cities,
         response = requests.get(url)
         weather_data = response.json()
         df_weather_city = pd.DataFrame(weather_data['hourly'])
-        df_weather_city['time'] = pd.to_datetime(df_weather_city['time'], utc=True).dt.tz_convert("Europe/Berlin")
+        # bug 3 corrected: convert time column to datetime with timezone information, since the open-meteo API returns time in local timezone and we need to have the correct timestamps for merging with the energy data and creating time-based features, we need to convert the time column to datetime with timezone information (UTC) and then convert it to the local timezone (Europe/Berlin) if needed
+        df_weather_city['time'] = pd.to_datetime(df_weather_city['time']) #, utc=True) #.dt.tz_convert("Europe/Berlin")
         #print(f"weather for {city}: {len(df_weather_city)} rows")
         #print(df_weather_city.head(3))
         weather_city_dict.update({city:df_weather_city})
@@ -335,18 +385,12 @@ def merge_weather_data_with_city_weights(in_weather_city_dict,
 
 # feature engineering: create new features based on existing ones, such as rolling averages, lagged variables, or interaction terms
 
-base_temperature_heating = 15  # base temperature for heating degree days
+base_temperature_heating = 18  # base temperature for heating degree days
 base_temperature_cooling = 25  # base temperature for cooling degree days
-
-pandemic_start = pd.to_datetime('2020-03-01', utc=True)
-pandemic_end = pd.to_datetime('2021-12-31', utc=True)
 
 def create_weather_features(in_df, 
                     in_base_temperature_heating=base_temperature_heating, 
-                    in_base_temperature_cooling=base_temperature_cooling, 
-                    in_pandemic_start=pandemic_start, 
-                    in_pandemic_end=pandemic_end, 
-                    time_column='time'):
+                    in_base_temperature_cooling=base_temperature_cooling):
     '''
     Create new features based on existing ones, such as rolling averages, lagged variables, or interaction terms.
     '''
@@ -364,89 +408,208 @@ def create_weather_features(in_df,
     out_df['heating_degree'] = out_df['apparent_temperature'].apply(lambda x: max(0, in_base_temperature_heating - x))  # HDD is calculated as the difference between a base temperature (e.g., 18°C) and the actual temperature, but only if the actual temperature is below the base temperature
     out_df['cooling_degree'] = out_df['apparent_temperature'].apply(lambda x: max(0, x - in_base_temperature_cooling))  # CDD is calculated as the difference between the actual temperature and a base temperature (e.g., 25°C), but only if the actual temperature is above the base temperature
 
-    # add pandemic feature
-    out_df['is_pandemic_time'] = out_df[time_column].apply(lambda x: 1 if (x >= in_pandemic_start) and (x <= in_pandemic_end) else 0)
-
     return out_df
 
 # ============ prepare weather data ============
 
 # fetch weather data for the selected cities, merge it with population weights to get a Germany-wide weather dataset, and save it to the processed data folder
-def prepare_weather_data(in_start_date = start_date, 
-                        in_end_date = end_date, 
+def prepare_weather_data(in_start_date,
+                        in_end_date, 
                         in_selected_cities=selected_cities,
                         in_weather_variables=weather_variables, 
-                        in_city_population=city_population, 
-                        in_file_path: str | None = None):
+                        in_city_population=city_population):
     '''
     Prepare weather data for modeling: fetch weather data for the selected cities, 
     merge it with population weights to get a Germany-wide weather dataset, and save it to the processed data folder.
     '''
     weather_city_dict = fetch_weather_data_for_cities(in_selected_cities, in_start_date, in_end_date, in_weather_variables)
-    df_weather_germany = merge_weather_data_with_city_weights(weather_city_dict, in_city_population, in_weather_variables)
-    df_weather_germany = rename_time_column(df_weather_germany)
-    df_weather_germany = create_weather_features(df_weather_germany)
-    if in_file_path:
-        out_file_path = f"{in_file_path}weather_germany.csv"
-        df_weather_germany.to_csv(out_file_path, index=False)
-        print(f"Germany-wide weather dataset saved to: {out_file_path}")
-    return df_weather_germany
+    out_df = merge_weather_data_with_city_weights(weather_city_dict, in_city_population, in_weather_variables)
+    out_df = rename_time_column(out_df)
+    out_df = out_df.sort_values('time').reset_index(drop=True)
+    out_df = create_weather_features(out_df)
+ 
+    return out_df
+
+# ============ prepare weather forecast data ============
+
+def fetch_weather_forecast_for_cities(
+        in_selected_cities=selected_cities,
+        in_weather_variables=weather_variables,
+        forecast_days: int = 2): # forecast_days is set to 2 by default, otherwise only the same day forecast is fetched
+    '''
+    Fetch hourly weather forecast from open-meteo forecast API for the selected cities.
+    forecast_days: 1-16 (free tier max is 16)
+    '''
+    out_weather_city_dict = {}
+    for city, coords in in_selected_cities.items():
+        url = (
+            f"https://api.open-meteo.com/v1/forecast"
+            f"?latitude={coords['latitude']}&longitude={coords['longitude']}"
+            f"&hourly={','.join(in_weather_variables)}"
+            f"&forecast_days={forecast_days}"
+            f"&timezone=auto"
+        )
+        response = requests.get(url)
+        response.raise_for_status()
+        weather_data = response.json()
+        df_weather_city = pd.DataFrame(weather_data['hourly'])
+        df_weather_city['time'] = pd.to_datetime(df_weather_city['time'], utc=True) #.dt.tz_convert("Europe/Berlin")
+        out_weather_city_dict[city] = df_weather_city
+        time.sleep(1)
+    return out_weather_city_dict
+
+
+def prepare_weather_forecast(
+        # forecast_days is set to 2 by default, otherwise only the same day forecast is fetched
+        in_selected_cities=selected_cities,
+        in_weather_variables=weather_variables,
+        in_city_population=city_population):
+    '''
+    Prepare forecast weather data: fetch forecast for cities, merge with 
+    population weights, and create weather features.
+    '''
+    weather_city_dict = fetch_weather_forecast_for_cities()
+    out_df = merge_weather_data_with_city_weights(weather_city_dict)
+    out_df = rename_time_column(out_df)
+    
+    return out_df
 
 
 # ---------- comnbine energy and weather dataset for modeling ----------
 
-processed_file_path = "../data/processed/"
-def combine_energy_weather_dataset(in_energy_df, 
-                                    in_weather_df, 
-                                    in_file_path: str | None = None):
+def combine_energy_weather_dataset(in_energy_df, in_weather_df):
     '''
     Prepare the combined energy and weather dataset for modeling: merge the energy and weather datasets on the timestamp, 
     drop columns with high correlation, and save the combined dataset to the processed data folder.
     '''
-    df_combined = pd.DataFrame()
+    in_energy_df['time'] = pd.to_datetime(in_energy_df['time'], utc=True) 
+    in_weather_df['time'] = pd.to_datetime(in_weather_df['time'], utc=True)
+    out_df = pd.merge(in_energy_df, in_weather_df, on='time', how='inner')
+    out_df = out_df.sort_values('time').reset_index(drop=True)
 
-    in_energy_df['time'] = pd.to_datetime(in_energy_df['time'], utc=True).dt.tz_convert("Europe/Berlin")
-    in_weather_df['time'] = pd.to_datetime(in_weather_df['time']).dt.tz_convert("Europe/Berlin")
-    df_combined = pd.merge(in_energy_df, in_weather_df, on='time', how='inner')
-    
-    if in_file_path:
-        out_file_path = f"{in_file_path}energy_weather_germany.csv"
-        df_combined.to_csv(out_file_path, index=False)
-        print(f"Combined dataset saved to: {out_file_path}")
-
-    return df_combined
+    return out_df
 
 # =========== prepare the combined energy and weather dataset for modeling ============
 
-def prepare_data_for_modeling(in_file_path=orig_file_path):
+def prepare_data_for_modeling():
     '''
     Prepare the combined energy and weather dataset for modeling: merge the energy and weather datasets on the timestamp, 
     drop columns with high correlation, and save the combined dataset to the processed data folder.
     '''
-    df_energy, start_date, end_date = prepare_energy_data(purpose='modeling')
+    df_energy, start_date, end_date = prepare_energy_data_for_modeling()
     df_weather = prepare_weather_data(in_start_date=start_date, in_end_date=end_date)
-    df_combined = combine_energy_weather_dataset(df_energy, df_weather)
-    return df_combined
+    out_df = combine_energy_weather_dataset(df_energy, df_weather)
+    out_df = out_df.sort_values('time').reset_index(drop=True)
 
-# ---------- prepare future features for prediction ----------
+    return out_df
 
-def get_start_end_date(prediction_date):
-    #prediction_date = "2026-05-07"
-    # Need at least 15 days of history so that the 168h lag/rolling features have enough rows
-    start_date = (pd.to_datetime(prediction_date) - pd.Timedelta(days=15)).strftime("%Y-%m-%d")
-    end_date = (pd.to_datetime(prediction_date) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    return start_date, end_date 
+# =========== prepare historical data for prediction and compare with actual data ============
+
+def prepare_historical_data_for_prediction(prediction_date, history_days=15):
+    '''
+    Prepare historical data for prediction and compare with actual data: 
+        fetch the energy data from SMARD for the past history_days, 
+        create time-based features, and return the prepared DataFrame along with the actual energy demand for the prediction date.
+    '''
+    start_date, end_date = get_start_end_date(prediction_date, history_days)
+    df_energy = fetch_smard_netzlast(start_date, end_date)
+    df_energy = create_energy_features(df_energy)
+    df_energy = create_time_based_features(df_energy, in_year=pd.to_datetime(prediction_date).year)
+
+    df_weather = prepare_weather_data(in_start_date=start_date, in_end_date=end_date)
+    out_df = combine_energy_weather_dataset(df_energy, df_weather)
+    out_df = out_df.sort_values('time').reset_index(drop=True)
+
+    # use only the predictors 
+    out_df = out_df.drop(columns=['time', 'EnergyDemand'], errors='ignore')
+    
+    return out_df
+
 
 # ============= prepare future features for prediction ============ 
-# create a DataFrame with the same structure as the training data, but with future timestamps and corresponding weather features, which can be used for making predictions for future energy demand
-def prepare_future_features(prediction_date):
+
+def get_start_end_date(prediction_date, history_days=15):
+    # Need at least 168h (7 days) of history for lag/rolling features + buffer
+    start_date = (pd.to_datetime(prediction_date) - pd.Timedelta(days=history_days)).strftime("%Y-%m-%d")
+    end_date   = (pd.to_datetime(prediction_date) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    return start_date, end_date
+
+
+def prepare_future_features(prediction_date, horizon_hours=24):
     '''
-    Prepare future features for prediction: create a DataFrame with the same structure as the training data, but with future timestamps and corresponding weather features, which can be used for making predictions for future energy demand.
+    Prepare future features for prediction.
+    
+    Parameters
+    ----------
+    prediction_date : str  e.g. "2026-05-13"
+        First hour of the forecast window (00:00 local time).
+    horizon_hours : int
+        How many hours ahead to forecast (24 = 1 day, 168 = 7 days).
+
+    Returns
+    -------
+    df_future : pd.DataFrame
+        One row per forecast hour, same feature columns as training data,
+        WITHOUT EnergyDemand (target).
     '''
-    start_date, end_date = get_start_end_date(prediction_date)
-    df_energy = prepare_energy_data(purpose='prediction', in_start_date=start_date, in_end_date=end_date)
-    df_weather = prepare_weather_data(in_start_date=start_date, in_end_date=end_date)
-    df_future = combine_energy_weather_dataset(in_energy_df=df_energy, in_weather_df=df_weather)
-    df_future = df_future.drop(columns=['EnergyDemand'])  # drop the target variable, since we want to predict it
-    df_future = df_future.dropna()  # drop rows with missing values, which can occur due to lagged features
+    if horizon_hours > 24:
+        import warnings
+        warnings.warn(
+            "horizon_hours > 24: lag_24h features for hours beyond the first 24 "
+            "will use actual historical values from 1+ weeks ago, not predicted values. "
+            "For accurate multi-day forecasts consider iterative/recursive prediction.",
+            UserWarning
+        )
+
+    # ---- 1. fetch enough historical energy data for lag/rolling features ----
+    # lag_168h + rolling_mean_168h need 168 rows before the first forecast hour
+    # add extra buffer of 2 days to be safe after dropna()
+    history_days = (168 // 24) + 2  # = 9 days
+    hist_start = (pd.to_datetime(prediction_date) - pd.Timedelta(days=history_days)).strftime("%Y-%m-%d")
+    hist_end   = (pd.to_datetime(prediction_date) - pd.Timedelta(hours=1)).strftime("%Y-%m-%d")
+
+    df_energy = fetch_smard_netzlast(hist_start, hist_end)
+
+    #df_hist = create_time_based_features(df_hist, in_year=pd.to_datetime(prediction_date).year)
+    df_energy = create_energy_features(df_energy) # adds lags & rolling means, drops NaN
+    #print(f'df_energy shape: {df_energy.shape}')
+    #display(f'df_energy tail 3 for {prediction_date}', df_energy.tail(3))
+
+    df_future = df_energy.tail(24).copy().reset_index(drop=True)
+
+    # ---- 2. build future hourly timestamps for the forecast horizon ----
+    future_times = pd.date_range(
+        start=pd.to_datetime(prediction_date, utc=True), #.tz_convert("Europe/Berlin"),
+        periods=horizon_hours,
+        freq='h',
+        # bug 4 corrected: add timezone information to future timestamps, since the future timestamps need to have the same timezone information as the historical energy data and weather data for merging and creating time-based features, we need to add timezone information (UTC) to the future timestamps and then convert it to the local timezone (Europe/Berlin) if needed
+        #tz='Europe/Berlin'
+    )
+    df_future['time'] = future_times
+
+    # ---- 3. add time-based features for future timestamps ----
+    df_future = create_time_based_features(df_future, in_year=pd.to_datetime(prediction_date).year)
+    #display(f'future features (time + energy) tail 3 for {prediction_date}', df_future.tail(3))
+    
+    # ---- 4. fetch weather forecast  ----
+    df_weather_forecast = prepare_weather_forecast( )
+    #display(f'weather forecast tail 3 for {prediction_date}', df_weather_forecast.tail(3))
+
+    df_weather = prepare_weather_data(in_start_date=hist_start, in_end_date=hist_end)  
+    #display(f'weather data tail 3 from {hist_start} to {hist_end}', df_weather.tail(3))
+
+    df_weather = pd.concat([df_weather, df_weather_forecast], ignore_index=True)  # combine historical weather and forecast weather
+    #display(f'combined weather data + forecast tail 3 for {prediction_date}', df_weather.tail(3))
+
+    df_weather = create_weather_features(df_weather)  # update weather features for the whole period
+    df_weather = df_weather.tail(24)
+    #print(f"weather features tail 24 after creating features: {df_weather.shape}")
+    #display(f'weather features tail 3 after adding features for {prediction_date}', df_weather.tail(3))
+    #print(df_weather.isna().sum())
+  
+    df_future = combine_energy_weather_dataset(df_future, df_weather)  # merge future timestamps with weather features
+    #print(f"df_future tail 24 after merge: {df_future.shape}")
+    #display(f'df_future tail 24 after merge for {prediction_date}', df_future.tail(24))
+    #print(df_future.isna().sum())
+
     return df_future

@@ -1,7 +1,5 @@
 import pandas as pd
 
-df_energy_weather = pd.read_csv('../data/processed/energy_weather_2019_2025.csv', parse_dates=['DateUTC'])
-
 # Split the data into training and testing sets based on the date
 def train_test_split_by_date(df, date_column, target_column, split_date):
     train_data = df[df[date_column] < split_date]
@@ -12,7 +10,16 @@ def train_test_split_by_date(df, date_column, target_column, split_date):
     target_test = test_data[target_column]
     return features_train, target_train, features_test, target_test
 
-#features_train, target_train, features_test, target_test = train_test_split_by_date(df_energy_weather, 'DateUTC', '2025-01-01')
+def train_test_split_by_date_for_sarimax(df, date_column, target_column, split_date):
+    train_data = df[df[date_column] < split_date]
+    test_data = df[df[date_column] >= split_date]
+
+    features_train = train_data.drop(target_column, axis=1)
+    features_test = test_data.drop(target_column, axis=1)
+    target_train = train_data[[date_column, target_column]]
+    target_test = test_data[[date_column, target_column]]
+
+    return features_train, target_train, features_test, target_test
 
 # column transformer pipeline for preprocessing
 from sklearn.compose import ColumnTransformer   
@@ -21,8 +28,8 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 
 def init_preprocessor(in_df):
     # identify numeric and categorical columns
-    numeric_features = in_df.select_dtypes(include=['float64']).columns
-    categorical_features = in_df.select_dtypes(include=['int64']).columns
+    numeric_features = in_df.select_dtypes(include=['float64', 'float32']).columns
+    categorical_features = in_df.select_dtypes(include=['int64', 'int32']).columns
     # numeric transformer
     numeric_transformer = Pipeline(steps=[ 
         ('scaler', StandardScaler()) 
@@ -59,14 +66,15 @@ def train_model_predict(model_pipeline, features_train, target_train, features_f
 
 import numpy as np
 
-def print_scores(target_train, predictions):
+def print_scores(model_name, target_test, predictions):
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-    mae = mean_absolute_error(target_train, predictions)
-    rmse = np.sqrt(mean_squared_error(target_train, predictions))
-    r2 = r2_score(target_train, predictions)
-    print(f'MAE  : {mae:.4f}')
-    print(f'RMSE : {rmse:.4f}')
-    print(f'R^2  : {r2:.4f}')
+    mae = mean_absolute_error(target_test, predictions)
+    rmse = np.sqrt(mean_squared_error(target_test, predictions))
+    r2 = r2_score(target_test, predictions)
+    print("-"*20 + f" scoring " + "-"*20)
+    print("model          MAE         RMSE       R²")
+    print(f'{model_name:<15} {mae:.4f}     {rmse:.4f}    {r2:.4f}')
+    
 
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, learning_curve, learning_curve
 
@@ -92,12 +100,12 @@ except ImportError:
 
 # tune the model using Bayesian optimization
 def tune_model_bayesian(model_pipeline, 
-                        in_param_grid, 
+                        in_param_bayes, 
                         in_features_train, 
                         in_target_train):
     tscv = TimeSeriesSplit(n_splits=5)
     bayes_search = BayesSearchCV(estimator=model_pipeline, 
-                                 search_spaces=in_param_grid, 
+                                 search_spaces=in_param_bayes, 
                                  cv=tscv,
                                  scoring='neg_mean_absolute_error', 
                                  n_jobs=-1)
@@ -122,7 +130,7 @@ from sklearn.model_selection import learning_curve
 import matplotlib.pyplot as plt
 
 # learn curve for training and testing data
-def plot_learning_curve(model_pipeline, features_train, target_train):
+def plot_learning_curve(model_pipeline, model_name, features_train, target_train):
     tscv = TimeSeriesSplit(n_splits=3)
     train_sizes, train_scores, test_scores = learning_curve(model_pipeline, 
                                                             features_train, 
@@ -132,12 +140,12 @@ def plot_learning_curve(model_pipeline, features_train, target_train):
     train_scores_mean = -train_scores.mean(axis=1)
     test_scores_mean = -test_scores.mean(axis=1)
 
-    plt.figure()
-    plt.plot(train_sizes, train_scores_mean, 'o-', color='r', label='Training score')
-    plt.plot(train_sizes, test_scores_mean, 'o-', color='g', label='Cross-validation score')
-    plt.title('Learning Curve')
+    plt.figure(figsize=(6, 3))
+    plt.plot(train_sizes, train_scores_mean, 'o-', color='orange', label='Training score')
+    plt.plot(train_sizes, test_scores_mean, 'o-', color='steelblue', label='Cross-validation score')
+    plt.title(f'Learning Curve of {model_name}')
     plt.xlabel('Training examples')
     plt.ylabel('MAE')
     plt.legend(loc='best')
-    plt.grid()
+    plt.grid(True)
     plt.show()

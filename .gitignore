@@ -9,3 +9,8 @@ models/*
 
 # ignore .opd files in presentation folder
 presentation/*.opd
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
